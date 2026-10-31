@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -99,7 +101,7 @@ def call_openai_compatible(app, packages: list[dict], policy_revision: Any) -> d
     payload = {
         "model": app.config["AI_MODEL"],
         "temperature": 0,
-        "max_tokens": app.config["AI_MAX_OUTPUT_TOKENS"],
+        "max_completion_tokens": app.config["AI_MAX_OUTPUT_TOKENS"],
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -109,6 +111,16 @@ def call_openai_compatible(app, packages: list[dict], policy_revision: Any) -> d
             },
         ],
     }
+    parsed_url = urlsplit(url)
+    started_at = time.monotonic()
+    app.logger.info(
+        "AI request started provider_host=%s model=%s packages=%d request_bytes=%d timeout_seconds=%s",
+        parsed_url.hostname or "unknown",
+        app.config["AI_MODEL"],
+        len(packages),
+        len(canonical_json(payload).encode("utf-8")),
+        app.config["AI_TIMEOUT_SECONDS"],
+    )
     try:
         response = requests.post(
             url,
@@ -122,12 +134,58 @@ def call_openai_compatible(app, packages: list[dict], policy_revision: Any) -> d
         response.raise_for_status()
         body = response.json()
         content = body["choices"][0]["message"]["content"]
+        app.logger.info(
+            "AI request completed provider_host=%s model=%s status=%s elapsed_seconds=%.2f",
+            parsed_url.hostname or "unknown",
+            app.config["AI_MODEL"],
+            response.status_code,
+            time.monotonic() - started_at,
+        )
     except requests.Timeout as exc:
+        app.logger.error(
+            "AI provider timeout provider_host=%s model=%s elapsed_seconds=%.2f",
+            parsed_url.hostname or "unknown",
+            app.config["AI_MODEL"],
+            time.monotonic() - started_at,
+        )
         raise DecisionError("AI provider timed out before the request deadline.") from exc
+    except requests.HTTPError as exc:
+        provider_response = exc.response
+        status_code = provider_response.status_code if provider_response is not None else "unknown"
+        # Provider error bodies are useful for debugging, but keep them short and redact
+        # bearer-shaped values. Never log prompts, invoice documents, or the API key.
+        error_text = ""
+        if provider_response is not None:
+            try:
+                error_text = provider_response.text[:600]
+            except Exception:
+                error_text = "<unavailable>"
+        error_text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", error_text)
+        app.logger.error(
+            "AI provider HTTP error provider_host=%s model=%s status=%s body=%s elapsed_seconds=%.2f",
+            parsed_url.hostname or "unknown",
+            app.config["AI_MODEL"],
+            status_code,
+            error_text.replace("\n", " "),
+            time.monotonic() - started_at,
+        )
+        raise DecisionError(f"AI provider returned HTTP {status_code}.") from exc
     except requests.RequestException as exc:
-        app.logger.warning("AI provider request failed: %s", exc.__class__.__name__)
+        app.logger.exception(
+            "AI provider transport error provider_host=%s model=%s error_type=%s elapsed_seconds=%.2f",
+            parsed_url.hostname or "unknown",
+            app.config["AI_MODEL"],
+            exc.__class__.__name__,
+            time.monotonic() - started_at,
+        )
         raise DecisionError("AI provider request failed.") from exc
     except (ValueError, KeyError, IndexError, TypeError) as exc:
+        app.logger.exception(
+            "AI provider returned an unexpected response envelope provider_host=%s model=%s elapsed_seconds=%.2f",
+            parsed_url.hostname or "unknown",
+            app.config["AI_MODEL"],
+            time.monotonic() - started_at,
+        )
         raise DecisionError("AI provider returned an unexpected response envelope.") from exc
 
     parsed = _extract_json(content)

@@ -17,9 +17,9 @@ services:
           name: a2a-invoice-agent-db
           property: connectionString
       - key: AI_BASE_URL
-        value: https://api.openai.com/v1
+        value: https://aipipe.org/openrouter/v1
       - key: AI_MODEL
-        value: gpt-4o-mini
+        value: openai/gpt-4.1-nano
       - key: AI_TIMEOUT_SECONDS
         value: "35"
       - key: AI_MAX_OUTPUT_TOKENS

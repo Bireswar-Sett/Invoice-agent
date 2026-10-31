@@ -59,9 +59,11 @@ For a longer-lived deployment, change the database `plan` in `render.yaml` to a 
 | `A2A_BASE_PATH` | `/a2a` | URL path prefix for the four A2A service routes |
 | `PUBLIC_BASE_URL` | Derived from Render | Exact submitted base URL, including `/a2a/`; set explicitly if using a custom domain or different path |
 | `DATABASE_URL` | Local SQLite | SQLAlchemy connection string; use Render Postgres in production |
-| `AI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
-| `AI_API_KEY` | empty | Provider API key; required before processing invoice batches |
-| `AI_MODEL` | `gpt-4o-mini` | Model name supported by the configured provider |
+| `AI_BASE_URL` | `https://aipipe.org/openrouter/v1` | AI Pipe OpenRouter-compatible API base URL |
+| `AI_API_KEY` | empty | AI Pipe token; required before processing invoice batches |
+| `AI_MODEL` | `openai/gpt-4.1-nano` | Model name supported by AI Pipe |
+
+For AI Pipe, its documented Chat Completions URL is `https://aipipe.org/openrouter/v1/chat/completions`. The application appends `/chat/completions` to `AI_BASE_URL` automatically. See https://aipipe.org/. The request uses `max_completion_tokens` (not the deprecated `max_tokens`) because GPT-4.1 Nano requires the newer parameter through OpenRouter-compatible endpoints.
 | `AI_TIMEOUT_SECONDS` | `35` | LLM request timeout; keep within the grader's request budget |
 | `AI_MAX_OUTPUT_TOKENS` | `12000` | Maximum generated proposal output |
 | `MAX_PACKAGES_PER_BATCH` | `60` | Safety limit on packages in a single batch |
@@ -160,3 +162,50 @@ Before using the grader, add integration tests against the actual case package f
 - A proposal is not an execution authorization. Only a matched `ACCEPTED` continuation creates an `ExecutionRecord` and receipt artifact.
 - This challenge has no external payment connector. `ExecutionRecord` is the durable record of the approved business action; it deliberately does not initiate a real bank transfer.
 - Use Postgres in Render. Free web-service local files are ephemeral, and free web services cannot use persistent disks.
+
+
+## 7. Diagnostics without using the grader
+
+The `scripts/diagnose.py` tool checks the live/local HTTP surface using only harmless probes. It does **not** submit a valid invoice batch, create a Task, execute a business action, or consume a grader Check/Save.
+
+Run the public Render checks:
+
+```bash
+python scripts/diagnose.py --base-url https://YOUR-SERVICE.onrender.com
+```
+
+Run local application checks after starting `python run.py` in another terminal:
+
+```bash
+python scripts/diagnose.py --base-url http://127.0.0.1:8000
+```
+
+Run a separate tiny AI Pipe JSON-mode smoke test (this uses a small model request and may consume a small amount of AI Pipe quota):
+
+```bash
+export AI_API_KEY='your-aipipe-token'
+export AI_BASE_URL='https://aipipe.org/openrouter/v1'
+export AI_MODEL='openai/gpt-4.1-nano'
+python scripts/diagnose.py --base-url https://YOUR-SERVICE.onrender.com --test-ai
+```
+
+Do not paste the token into chat or commit it to Git. The script never prints the token.
+
+### Collect Render logs
+
+Install the Render CLI from https://render.com/docs/cli, then authenticate once:
+
+```bash
+render login
+render services
+```
+
+Find the service ID for `a2a-invoice-agent` (it starts with `srv-`) and collect recent runtime, error, handler, and available HTTP request logs:
+
+```bash
+RENDER_SERVICE_ID=srv-xxxxxxxx ./scripts/collect_render_logs.sh
+```
+
+The logs are written under `./diagnostics/`. Inspect them for credentials or private invoice contents before sharing. Render CLI supports resource, time, level, method, path and status-code filters; request logs may depend on workspace plan. See https://render.com/docs/cli-reference and https://render.com/docs/logging.
+
+The provider integration now logs the provider host, model, package count, request size, latency, HTTP status, and a short redacted provider error body. It never logs the API key or invoice prompt. Redeploy this code revision before expecting the improved provider diagnostics in Render logs.
