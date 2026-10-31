@@ -66,6 +66,126 @@ def _extract_json(text: str) -> dict:
     return parsed
 
 
+def _completion_url(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    return base if base.endswith("/chat/completions") else base + "/chat/completions"
+
+
+def _post_completion(app, url: str, model: str, payload: dict, api_key: str):
+    parsed_url = urlsplit(url)
+    started_at = time.monotonic()
+    app.logger.info(
+        "AI request started provider_host=%s provider_path=%s model=%s packages=%s request_bytes=%d timeout_seconds=%s",
+        parsed_url.hostname or "unknown",
+        parsed_url.path,
+        model,
+        payload.get("_package_count", "unknown"),
+        len(canonical_json({k: v for k, v in payload.items() if not k.startswith("_")}).encode("utf-8")),
+        app.config["AI_TIMEOUT_SECONDS"],
+    )
+    request_payload = {k: v for k, v in payload.items() if not k.startswith("_")}
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=request_payload,
+        timeout=app.config["AI_TIMEOUT_SECONDS"],
+    )
+    elapsed = time.monotonic() - started_at
+    if not response.ok:
+        # Keep the provider's short diagnostic message; never log prompts or secrets.
+        error_text = response.text[:600]
+        error_text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", error_text)
+        app.logger.error(
+            "AI provider HTTP error provider_host=%s provider_path=%s model=%s status=%s body=%s elapsed_seconds=%.2f",
+            parsed_url.hostname or "unknown",
+            parsed_url.path,
+            model,
+            response.status_code,
+            error_text.replace("\n", " "),
+            elapsed,
+        )
+        response.raise_for_status()
+    try:
+        body = response.json()
+    except ValueError as exc:
+        app.logger.error(
+            "AI provider returned non-JSON HTTP response provider_host=%s provider_path=%s model=%s status=%s content_type=%s body=%s",
+            parsed_url.hostname or "unknown",
+            parsed_url.path,
+            model,
+            response.status_code,
+            response.headers.get("Content-Type", "<missing>"),
+            response.text[:300].replace("\n", " "),
+        )
+        raise DecisionError("AI provider returned a non-JSON response.") from exc
+
+    try:
+        choice = body["choices"][0]
+        message = choice["message"]
+        content = message.get("content")
+        finish_reason = choice.get("finish_reason")
+        usage = body.get("usage", {})
+    except (KeyError, IndexError, TypeError) as exc:
+        app.logger.error(
+            "AI provider response envelope missing fields provider_host=%s provider_path=%s model=%s top_level_keys=%s",
+            parsed_url.hostname or "unknown",
+            parsed_url.path,
+            model,
+            sorted(body.keys()) if isinstance(body, dict) else type(body).__name__,
+        )
+        raise DecisionError("AI provider returned an unexpected response envelope.") from exc
+
+    app.logger.info(
+        "AI request completed provider_host=%s provider_path=%s model=%s status=%s finish_reason=%s usage=%s elapsed_seconds=%.2f",
+        parsed_url.hostname or "unknown",
+        parsed_url.path,
+        model,
+        response.status_code,
+        finish_reason,
+        usage,
+        elapsed,
+    )
+    if finish_reason == "length":
+        raise DecisionError(
+            "AI provider reached max_completion_tokens before completing the invoice proposals."
+        )
+    if finish_reason == "content_filter":
+        raise DecisionError("AI provider stopped the invoice response due to its content filter.")
+    if not isinstance(content, str) or not content.strip():
+        refusal = message.get("refusal") if isinstance(message, dict) else None
+        raise DecisionError(f"AI provider returned empty content. Refusal={str(refusal)[:160]}")
+    return content
+
+
+def _post_completion_compat(app, url: str, model: str, payload: dict, api_key: str):
+    """Retry only a rejected optional reasoning_effort field, never a successful inference."""
+    try:
+        return _post_completion(app, url, model, payload, api_key)
+    except requests.HTTPError as exc:
+        response = exc.response
+        body = response.text[:1000].lower() if response is not None else ""
+        status = response.status_code if response is not None else None
+        unsupported_effort = (
+            status == 400
+            and "reasoning_effort" in body
+            and any(word in body for word in ("unsupported", "unrecognized", "unknown", "invalid"))
+            and "reasoning_effort" in payload
+        )
+        if not unsupported_effort:
+            raise
+        retry_payload = dict(payload)
+        retry_payload.pop("reasoning_effort", None)
+        app.logger.warning(
+            "Provider rejected reasoning_effort; retrying the same request once without that optional parameter host=%s model=%s",
+            urlsplit(url).hostname or "unknown",
+            model,
+        )
+        return _post_completion(app, url, model, retry_payload, api_key)
+
+
 def call_openai_compatible(app, packages: list[dict], policy_revision: Any) -> dict[str, dict]:
     api_key = app.config.get("AI_API_KEY", "")
     if not api_key:
@@ -96,11 +216,12 @@ def call_openai_compatible(app, packages: list[dict], policy_revision: Any) -> d
         },
     }
     system_prompt = app.config.get("AI_SYSTEM_PROMPT") or DEFAULT_SYSTEM_PROMPT
-    base_url = app.config["AI_BASE_URL"].rstrip("/")
-    url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
+    configured_url = _completion_url(app.config["AI_BASE_URL"])
+    model = app.config["AI_MODEL"]
     payload = {
-        "model": app.config["AI_MODEL"],
+        "model": model,
         "max_completion_tokens": app.config["AI_MAX_OUTPUT_TOKENS"],
+        "reasoning_effort": app.config.get("AI_REASONING_EFFORT", "low"),
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -109,83 +230,54 @@ def call_openai_compatible(app, packages: list[dict], policy_revision: Any) -> d
                 "content": "Analyse these invoice packages. Return one proposal per package.\n" + canonical_json(user_payload),
             },
         ],
+        "_package_count": len(packages),
     }
-    parsed_url = urlsplit(url)
-    started_at = time.monotonic()
-    app.logger.info(
-        "AI request started provider_host=%s model=%s packages=%d request_bytes=%d timeout_seconds=%s",
-        parsed_url.hostname or "unknown",
-        app.config["AI_MODEL"],
-        len(packages),
-        len(canonical_json(payload).encode("utf-8")),
-        app.config["AI_TIMEOUT_SECONDS"],
-    )
+
+    content = None
     try:
-        response = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=app.config["AI_TIMEOUT_SECONDS"],
-        )
-        response.raise_for_status()
-        body = response.json()
-        content = body["choices"][0]["message"]["content"]
-        app.logger.info(
-            "AI request completed provider_host=%s model=%s status=%s elapsed_seconds=%.2f",
-            parsed_url.hostname or "unknown",
-            app.config["AI_MODEL"],
-            response.status_code,
-            time.monotonic() - started_at,
-        )
+        try:
+            content = _post_completion_compat(app, configured_url, model, payload, api_key)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            parsed = urlsplit(configured_url)
+            # Backward-compatible emergency route: older Render services may still have
+            # AI_BASE_URL=https://aipipe.org/openrouter/v1 saved in their dashboard even
+            # after the repository's render.yaml was changed. This token was verified to
+            # work against AI Pipe's /openai/v1 endpoint. Retry only failed OpenRouter
+            # requests with 400/402; never retry a successful inference.
+            is_aipipe_openrouter = (
+                parsed.hostname == "aipipe.org"
+                and "/openrouter/v1" in parsed.path
+                and status in {400, 402}
+            )
+            is_aipipe_stale_model = (
+                parsed.hostname == "aipipe.org"
+                and "/openai/v1" in parsed.path
+                and model != "gpt-5-nano"
+                and status in {400, 404, 410}
+            )
+            if not (is_aipipe_openrouter or is_aipipe_stale_model):
+                raise
+            fallback_url = "https://aipipe.org/openai/v1/chat/completions"
+            fallback_model = "gpt-5-nano"
+            app.logger.warning(
+                "AI Pipe provider route/model failed with HTTP %s; retrying once through verified OpenAI-compatible route host=aipipe.org model=%s",
+                status,
+                fallback_model,
+            )
+            fallback_payload = dict(payload)
+            fallback_payload["model"] = fallback_model
+            content = _post_completion_compat(app, fallback_url, fallback_model, fallback_payload, api_key)
     except requests.Timeout as exc:
         app.logger.error(
-            "AI provider timeout provider_host=%s model=%s elapsed_seconds=%.2f",
-            parsed_url.hostname or "unknown",
-            app.config["AI_MODEL"],
-            time.monotonic() - started_at,
+            "AI provider timeout provider_host=%s model=%s timeout_seconds=%s",
+            urlsplit(configured_url).hostname or "unknown",
+            model,
+            app.config["AI_TIMEOUT_SECONDS"],
         )
         raise DecisionError("AI provider timed out before the request deadline.") from exc
-    except requests.HTTPError as exc:
-        provider_response = exc.response
-        status_code = provider_response.status_code if provider_response is not None else "unknown"
-        # Provider error bodies are useful for debugging, but keep them short and redact
-        # bearer-shaped values. Never log prompts, invoice documents, or the API key.
-        error_text = ""
-        if provider_response is not None:
-            try:
-                error_text = provider_response.text[:600]
-            except Exception:
-                error_text = "<unavailable>"
-        error_text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", error_text)
-        app.logger.error(
-            "AI provider HTTP error provider_host=%s model=%s status=%s body=%s elapsed_seconds=%.2f",
-            parsed_url.hostname or "unknown",
-            app.config["AI_MODEL"],
-            status_code,
-            error_text.replace("\n", " "),
-            time.monotonic() - started_at,
-        )
-        raise DecisionError(f"AI provider returned HTTP {status_code}.") from exc
     except requests.RequestException as exc:
-        app.logger.exception(
-            "AI provider transport error provider_host=%s model=%s error_type=%s elapsed_seconds=%.2f",
-            parsed_url.hostname or "unknown",
-            app.config["AI_MODEL"],
-            exc.__class__.__name__,
-            time.monotonic() - started_at,
-        )
         raise DecisionError("AI provider request failed.") from exc
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
-        app.logger.exception(
-            "AI provider returned an unexpected response envelope provider_host=%s model=%s elapsed_seconds=%.2f",
-            parsed_url.hostname or "unknown",
-            app.config["AI_MODEL"],
-            time.monotonic() - started_at,
-        )
-        raise DecisionError("AI provider returned an unexpected response envelope.") from exc
 
     parsed = _extract_json(content)
     proposals = parsed.get("proposals")

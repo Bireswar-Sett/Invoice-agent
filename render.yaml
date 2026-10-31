@@ -20,8 +20,10 @@ services:
         value: https://aipipe.org/openai/v1
       - key: AI_MODEL
         value: gpt-5-nano
+      - key: AI_REASONING_EFFORT
+        value: low
       - key: AI_TIMEOUT_SECONDS
-        value: "35"
+        value: "38"
       - key: AI_MAX_OUTPUT_TOKENS
         value: "12000"
       - key: AI_API_KEY

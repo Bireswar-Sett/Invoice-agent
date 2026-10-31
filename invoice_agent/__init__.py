@@ -79,10 +79,11 @@ def create_app(test_config: dict | None = None) -> Flask:
         SQLALCHEMY_ENGINE_OPTIONS={"pool_pre_ping": True},
         MAX_CONTENT_LENGTH=int(os.getenv("MAX_REQUEST_BYTES", "2097152")),
         A2A_BASE_PATH=_normalise_base_path(os.getenv("A2A_BASE_PATH", "/a2a")),
-        AI_BASE_URL=os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+        AI_BASE_URL=os.getenv("AI_BASE_URL", "https://aipipe.org/openai/v1").rstrip("/"),
         AI_API_KEY=os.getenv("AI_API_KEY", ""),
-        AI_MODEL=os.getenv("AI_MODEL", "gpt-4o-mini"),
-        AI_TIMEOUT_SECONDS=float(os.getenv("AI_TIMEOUT_SECONDS", "35")),
+        AI_MODEL=os.getenv("AI_MODEL", "gpt-5-nano"),
+        AI_REASONING_EFFORT=os.getenv("AI_REASONING_EFFORT", "low"),
+        AI_TIMEOUT_SECONDS=float(os.getenv("AI_TIMEOUT_SECONDS", "38")),
         AI_MAX_OUTPUT_TOKENS=int(os.getenv("AI_MAX_OUTPUT_TOKENS", "12000")),
         MAX_PACKAGES_PER_BATCH=int(os.getenv("MAX_PACKAGES_PER_BATCH", "60")),
         AI_SYSTEM_PROMPT=os.getenv("AI_SYSTEM_PROMPT", ""),
@@ -92,6 +93,16 @@ def create_app(test_config: dict | None = None) -> Flask:
         app.config.update(test_config)
 
     logging.basicConfig(level=getattr(logging, str(app.config["LOG_LEVEL"]).upper(), logging.INFO))
+    from urllib.parse import urlsplit
+    _ai_host = urlsplit(app.config["AI_BASE_URL"]).hostname or "unknown"
+    app.logger.info(
+        "Invoice AI configured provider_host=%s provider_path=%s model=%s reasoning_effort=%s timeout_seconds=%s",
+        _ai_host,
+        urlsplit(app.config["AI_BASE_URL"]).path,
+        app.config["AI_MODEL"],
+        app.config.get("AI_REASONING_EFFORT", "low"),
+        app.config["AI_TIMEOUT_SECONDS"],
+    )
     db.init_app(app)
 
     from invoice_agent import models  # noqa: F401

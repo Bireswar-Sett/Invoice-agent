@@ -39,8 +39,9 @@ The LLM's output is validated before it is accepted. This cannot guarantee the m
 3. In Render, choose **New → Blueprint** and connect that repository.
 4. Render reads `render.yaml` and creates the web service plus a Free Postgres database.
 5. During Blueprint creation, provide `AI_API_KEY` for an OpenAI-compatible model provider.
-6. After deployment, open the web service's `onrender.com` URL and check `/healthz`.
-7. Your submitted A2A base URL is:
+6. For an existing Render service, explicitly set `AI_BASE_URL=https://aipipe.org/openai/v1`, `AI_MODEL=gpt-5-nano`, and `AI_REASONING_EFFORT=low` under **Dashboard → Service → Environment**. Existing dashboard values can override updated values in `render.yaml`; changing the repository file alone does not guarantee old environment values are replaced.
+7. After deployment, open the web service's `onrender.com` URL and check `/healthz`.
+8. Your submitted A2A base URL is:
 
    `https://YOUR-SERVICE.onrender.com/a2a/`
 
@@ -62,15 +63,16 @@ For a longer-lived deployment, change the database `plan` in `render.yaml` to a 
 | `AI_BASE_URL` | `https://aipipe.org/openai/v1` | AI Pipe OpenAI-compatible API base URL |
 | `AI_API_KEY` | empty | AI Pipe token; required before processing invoice batches |
 | `AI_MODEL` | `gpt-5-nano` | Model name supported by AI Pipe OpenAI route |
+| `AI_REASONING_EFFORT` | `low` | Keeps GPT-5 Nano latency and hidden reasoning-token use down for the 45-second request budget |
 
-For AI Pipe, use its OpenAI-compatible Chat Completions route: `https://aipipe.org/openai/v1/chat/completions`. The application appends `/chat/completions` to `AI_BASE_URL` automatically. The `gpt-5-nano` model was verified with this route. The request uses `max_completion_tokens` and deliberately omits `temperature`: GPT-5 reasoning models reject custom temperature values.
-| `AI_TIMEOUT_SECONDS` | `35` | LLM request timeout; keep within the grader's request budget |
+For AI Pipe, use its OpenAI-compatible Chat Completions route: `https://aipipe.org/openai/v1/chat/completions`. The application appends `/chat/completions` to `AI_BASE_URL` automatically. The `gpt-5-nano` model was verified with this route. The request uses `max_completion_tokens`, `reasoning_effort=low`, and deliberately omits `temperature`.
+| `AI_TIMEOUT_SECONDS` | `38` | LLM request timeout; keep within the grader's request budget |
 | `AI_MAX_OUTPUT_TOKENS` | `12000` | Maximum generated proposal output |
 | `MAX_PACKAGES_PER_BATCH` | `60` | Safety limit on packages in a single batch |
 | `MAX_REQUEST_BYTES` | `2097152` | Maximum HTTP request body size |
 | `MAX_RESPONSE_BYTES` | `524288` | Maximum successful response size (512 KiB) |
 
-`AI_BASE_URL` must expose the OpenAI-compatible `/chat/completions` endpoint and support JSON-object response mode. Examples include OpenAI and compatible hosted providers. For a different provider protocol, adapt `invoice_agent/ai.py`.
+`AI_BASE_URL` must expose the OpenAI-compatible `/chat/completions` endpoint and support JSON-object response mode. Examples include OpenAI and compatible hosted providers. For a different provider protocol, adapt `invoice_agent/ai.py`. If an older Render environment still points at AI Pipe `/openrouter/v1`, the code automatically retries a failed HTTP 400/402 once through the verified `/openai/v1` route using `gpt-5-nano`. This fallback never repeats a successful inference.
 
 ## 3. Local development
 
@@ -190,6 +192,16 @@ python scripts/diagnose.py --base-url https://YOUR-SERVICE.onrender.com --test-a
 ```
 
 Do not paste the token into chat or commit it to Git. The script never prints the token.
+
+### Test the actual 12-package AI decision call (no grader)
+
+After the small provider smoke test succeeds, run:
+
+```bash
+python scripts/test_ai_batch.py
+```
+
+This sends one small synthetic 12-package batch through the same model request and validates all proposal schemas, evidence references, rationales, and expected action classes. It creates no Task and never contacts the grader. It does consume one small AI inference request.
 
 ### Collect Render logs
 

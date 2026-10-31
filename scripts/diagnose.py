@@ -138,14 +138,16 @@ def test_ai_pipe() -> bool:
     # Reasoning models count hidden reasoning tokens against max_completion_tokens.
     # 100 tokens can be consumed before a short JSON answer is emitted.
     output_tokens = int(os.getenv("AI_DIAGNOSTIC_MAX_OUTPUT_TOKENS", "1024"))
+    reasoning_effort = os.getenv("AI_REASONING_EFFORT", "low")
     if not api_key:
         print("FAIL  AI provider smoke test: AI_API_KEY is not set in this shell")
         return False
     url = base if base.endswith("/chat/completions") else base + "/chat/completions"
-    print(f"\nAI provider smoke test: host={urlsplit(url).hostname}, model={model}")
+    print(f"\nAI provider smoke test: host={urlsplit(url).hostname}, model={model}, reasoning_effort={reasoning_effort}")
     payload = {
         "model": model,
         "max_completion_tokens": output_tokens,
+        "reasoning_effort": reasoning_effort,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": "Return a valid JSON object only. Do not use markdown fences."},
