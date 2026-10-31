@@ -59,11 +59,11 @@ For a longer-lived deployment, change the database `plan` in `render.yaml` to a 
 | `A2A_BASE_PATH` | `/a2a` | URL path prefix for the four A2A service routes |
 | `PUBLIC_BASE_URL` | Derived from Render | Exact submitted base URL, including `/a2a/`; set explicitly if using a custom domain or different path |
 | `DATABASE_URL` | Local SQLite | SQLAlchemy connection string; use Render Postgres in production |
-| `AI_BASE_URL` | `https://aipipe.org/openrouter/v1` | AI Pipe OpenRouter-compatible API base URL |
+| `AI_BASE_URL` | `https://aipipe.org/openai/v1` | AI Pipe OpenAI-compatible API base URL |
 | `AI_API_KEY` | empty | AI Pipe token; required before processing invoice batches |
-| `AI_MODEL` | `openai/gpt-4.1-nano` | Model name supported by AI Pipe |
+| `AI_MODEL` | `gpt-5-nano` | Model name supported by AI Pipe OpenAI route |
 
-For AI Pipe, its documented Chat Completions URL is `https://aipipe.org/openrouter/v1/chat/completions`. The application appends `/chat/completions` to `AI_BASE_URL` automatically. See https://aipipe.org/. The request uses `max_completion_tokens` (not the deprecated `max_tokens`) because GPT-4.1 Nano requires the newer parameter through OpenRouter-compatible endpoints.
+For AI Pipe, use its OpenAI-compatible Chat Completions route: `https://aipipe.org/openai/v1/chat/completions`. The application appends `/chat/completions` to `AI_BASE_URL` automatically. The `gpt-5-nano` model was verified with this route. The request uses `max_completion_tokens` and deliberately omits `temperature`: GPT-5 reasoning models reject custom temperature values.
 | `AI_TIMEOUT_SECONDS` | `35` | LLM request timeout; keep within the grader's request budget |
 | `AI_MAX_OUTPUT_TOKENS` | `12000` | Maximum generated proposal output |
 | `MAX_PACKAGES_PER_BATCH` | `60` | Safety limit on packages in a single batch |
@@ -184,8 +184,8 @@ Run a separate tiny AI Pipe JSON-mode smoke test (this uses a small model reques
 
 ```bash
 export AI_API_KEY='your-aipipe-token'
-export AI_BASE_URL='https://aipipe.org/openrouter/v1'
-export AI_MODEL='openai/gpt-4.1-nano'
+export AI_BASE_URL='https://aipipe.org/openai/v1'
+export AI_MODEL='gpt-5-nano'
 python scripts/diagnose.py --base-url https://YOUR-SERVICE.onrender.com --test-ai
 ```
 

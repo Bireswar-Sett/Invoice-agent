@@ -100,7 +100,6 @@ def call_openai_compatible(app, packages: list[dict], policy_revision: Any) -> d
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     payload = {
         "model": app.config["AI_MODEL"],
-        "temperature": 0,
         "max_completion_tokens": app.config["AI_MAX_OUTPUT_TOKENS"],
         "response_format": {"type": "json_object"},
         "messages": [

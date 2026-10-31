@@ -10,11 +10,11 @@ from invoice_agent.ai import DecisionError, call_openai_compatible
 
 
 class FakeApp:
-    def __init__(self, base_url="https://aipipe.org/openrouter/v1"):
+    def __init__(self, base_url="https://aipipe.org/openai/v1"):
         self.config = {
             "AI_API_KEY": "test-token-do-not-log",
             "AI_BASE_URL": base_url,
-            "AI_MODEL": "openai/gpt-4.1-nano",
+            "AI_MODEL": "gpt-5-nano",
             "AI_TIMEOUT_SECONDS": 10,
             "AI_MAX_OUTPUT_TOKENS": 12000,
             "AI_SYSTEM_PROMPT": "Return JSON only.",
@@ -27,11 +27,11 @@ def _response(status: int, body: dict) -> requests.Response:
     response.status_code = status
     response._content = json.dumps(body).encode("utf-8")
     response.headers["Content-Type"] = "application/json"
-    response.url = "https://aipipe.org/openrouter/v1/chat/completions"
+    response.url = "https://aipipe.org/openai/v1/chat/completions"
     return response
 
 
-def test_ai_pipe_chat_completion_endpoint_and_json_mode(monkeypatch):
+def test_ai_pipe_openai_chat_completion_endpoint_and_json_mode(monkeypatch):
     captured = {}
     body = {
         "choices": [{
@@ -55,11 +55,12 @@ def test_ai_pipe_chat_completion_endpoint_and_json_mode(monkeypatch):
         "policy-v1",
     )
 
-    assert captured["url"] == "https://aipipe.org/openrouter/v1/chat/completions"
+    assert captured["url"] == "https://aipipe.org/openai/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer test-token-do-not-log"
-    assert captured["json"]["model"] == "openai/gpt-4.1-nano"
+    assert captured["json"]["model"] == "gpt-5-nano"
     assert captured["json"]["response_format"] == {"type": "json_object"}
     assert captured["json"]["max_completion_tokens"] == 12000
+    assert "temperature" not in captured["json"]
     assert "max_tokens" not in captured["json"]
     assert set(result) == {"pkg-1"}
 

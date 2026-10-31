@@ -132,8 +132,8 @@ def test_agent(base_url: str, token: str) -> bool:
 
 def test_ai_pipe() -> bool:
     api_key = os.getenv("AI_API_KEY", "")
-    base = os.getenv("AI_BASE_URL", "https://aipipe.org/openrouter/v1").rstrip("/")
-    model = os.getenv("AI_MODEL", "openai/gpt-4.1-nano")
+    base = os.getenv("AI_BASE_URL", "https://aipipe.org/openai/v1").rstrip("/")
+    model = os.getenv("AI_MODEL", "gpt-5-nano")
     timeout = float(os.getenv("AI_DIAGNOSTIC_TIMEOUT", "20"))
     if not api_key:
         print("FAIL  AI Pipe smoke test: AI_API_KEY is not set in this shell")
@@ -142,7 +142,6 @@ def test_ai_pipe() -> bool:
     print(f"\nAI provider smoke test: host={urlsplit(url).hostname}, model={model}")
     payload = {
         "model": model,
-        "temperature": 0,
         "max_completion_tokens": 100,
         "response_format": {"type": "json_object"},
         "messages": [
