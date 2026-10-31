@@ -135,17 +135,20 @@ def test_ai_pipe() -> bool:
     base = os.getenv("AI_BASE_URL", "https://aipipe.org/openai/v1").rstrip("/")
     model = os.getenv("AI_MODEL", "gpt-5-nano")
     timeout = float(os.getenv("AI_DIAGNOSTIC_TIMEOUT", "20"))
+    # Reasoning models count hidden reasoning tokens against max_completion_tokens.
+    # 100 tokens can be consumed before a short JSON answer is emitted.
+    output_tokens = int(os.getenv("AI_DIAGNOSTIC_MAX_OUTPUT_TOKENS", "1024"))
     if not api_key:
-        print("FAIL  AI Pipe smoke test: AI_API_KEY is not set in this shell")
+        print("FAIL  AI provider smoke test: AI_API_KEY is not set in this shell")
         return False
     url = base if base.endswith("/chat/completions") else base + "/chat/completions"
     print(f"\nAI provider smoke test: host={urlsplit(url).hostname}, model={model}")
     payload = {
         "model": model,
-        "max_completion_tokens": 100,
+        "max_completion_tokens": output_tokens,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": "Return JSON only."},
+            {"role": "system", "content": "Return a valid JSON object only. Do not use markdown fences."},
             {"role": "user", "content": "Return this JSON object: {\"ok\": true, \"provider\": \"aipipe\"}."},
         ],
     }
@@ -158,23 +161,56 @@ def test_ai_pipe() -> bool:
             timeout=(5, timeout),
         )
         elapsed = time.monotonic() - started
+        content_type = response.headers.get("Content-Type", "<missing>")
         if response.status_code != 200:
-            print(f"FAIL  AI Pipe HTTP {response.status_code} after {elapsed:.2f}s: {safe_body(response)}")
+            print(f"FAIL  AI provider HTTP {response.status_code} after {elapsed:.2f}s; content-type={content_type}; body={safe_body(response)}")
             return False
-        body = response.json()
-        content = body["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
+        try:
+            body = response.json()
+        except ValueError:
+            print(f"FAIL  AI provider returned non-JSON HTTP 200 after {elapsed:.2f}s; content-type={content_type}; body={safe_body(response, 1200)}")
+            return False
+        choices = body.get("choices") if isinstance(body, dict) else None
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            print(f"FAIL  AI provider response missing choices; keys={list(body) if isinstance(body, dict) else type(body).__name__}; body={safe_body(response, 1200)}")
+            return False
+        choice = choices[0]
+        message = choice.get("message") or {}
+        content = message.get("content")
+        finish_reason = choice.get("finish_reason")
+        usage = body.get("usage", {})
+        if not isinstance(content, str) or not content.strip():
+            print(
+                "FAIL  AI provider returned empty message content "
+                f"after {elapsed:.2f}s; finish_reason={finish_reason!r}; "
+                f"usage={usage!r}; max_completion_tokens={output_tokens}. "
+                "Reasoning models may have used the completion budget before producing visible text."
+            )
+            return False
+        raw = content.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\s*```$", "", raw)
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            print(
+                "FAIL  AI provider returned non-JSON message content "
+                f"after {elapsed:.2f}s; finish_reason={finish_reason!r}; "
+                f"content={content[:600]!r}; usage={usage!r}"
+            )
+            return False
         ok = isinstance(parsed, dict) and parsed.get("ok") is True
-        print(f"{'PASS' if ok else 'FAIL'}  AI Pipe completion after {elapsed:.2f}s; returned JSON={parsed!r}")
+        print(
+            f"{'PASS' if ok else 'FAIL'}  AI provider completion after {elapsed:.2f}s; "
+            f"finish_reason={finish_reason!r}; usage={usage!r}; returned JSON={parsed!r}"
+        )
         return ok
     except requests.Timeout:
-        print(f"FAIL  AI Pipe request timed out after {timeout}s")
+        print(f"FAIL  AI provider request timed out after {timeout}s")
         return False
     except requests.RequestException as exc:
-        print(f"FAIL  AI Pipe transport error: {type(exc).__name__}: {exc}")
-        return False
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
-        print(f"FAIL  AI Pipe returned unexpected JSON/envelope: {type(exc).__name__}: {exc}")
+        print(f"FAIL  AI provider transport error: {type(exc).__name__}: {exc}")
         return False
 
 
